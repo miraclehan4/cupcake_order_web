@@ -2,7 +2,11 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from io import BytesIO
+
+# 多伦多时区
+TORONTO_TZ = ZoneInfo("America/Toronto")
 
 # 页面配置
 st.set_page_config(
@@ -91,7 +95,8 @@ def save_order(name, flavor_qtys, request_date, custom_total=None, edit_id=None)
     else:
         total_price = calculate_total(total_qty)
     
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 使用多伦多时间
+    current_time = datetime.now(TORONTO_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -161,8 +166,11 @@ def confirm_clear_dialog():
 # 初始化
 init_db()
 
+# 使用多伦多时间显示今天日期
+today_str = datetime.now(TORONTO_TZ).strftime("%Y-%m-%d")
+
 st.title("🧁 Cozy Crumb Cake 订单管理系统")
-st.caption(f"📅 Today: {datetime.now().strftime('%Y-%m-%d')}")
+st.caption(f"📅 Today: {today_str} （多伦多时间）")
 
 # 初始化 session_state
 if "edit_id" not in st.session_state:
@@ -183,7 +191,7 @@ with col1:
     name = st.text_input("Customer Name", value=default_name, placeholder="请输入客户姓名", key=f"name_{st.session_state.form_reset}")
 
 with col2:
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    # 默认使用多伦多今天的日期
     default_date = st.session_state.edit_data.get("request_date", today_str)
     request_date = st.text_input("Request Date", value=default_date, placeholder="例如：2026-09-13", key=f"date_{st.session_state.form_reset}")
 
@@ -309,7 +317,7 @@ if not df.empty:
         st.download_button(
             label="📥 导出 Excel",
             data=buffer.getvalue(),
-            file_name=f"Cupcake_Sales_Report_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            file_name=f"Cupcake_Sales_Report_{datetime.now(TORONTO_TZ).strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
@@ -322,4 +330,4 @@ else:
     st.info("暂无销售记录，请先添加订单。")
 
 st.markdown("---")
-st.caption("Cozy Crumb Cake 订单管理系统 · Web Version")
+st.caption("Cozy Crumb Cake 订单管理系统 · Web Version（多伦多时区）")
