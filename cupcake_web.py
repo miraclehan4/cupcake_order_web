@@ -5,8 +5,25 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from io import BytesIO
 
-# 多伦多时区
+# ==================== 配置区 ====================
 TORONTO_TZ = ZoneInfo("America/Toronto")
+DB_NAME = "cupcake_sales.db"
+PASSWORD = "0417"          # ← 这里改登录密码
+
+# Cupcake 口味
+CUPCAKE_FLAVORS = [
+    "Vanilla", "Chocolate", "Strawberry", "Cookie Cream",
+    "Salty Caremel", "Tiramisu", "Pistachio", "Macha", "Oreo"
+]
+
+# Box Cake 口味（每个 $15）
+BOXCAKE_FLAVORS = [
+    "Matcha Red Bean Milky Mochi",
+    "Super Strawberry",
+    "Hojicha Caramel Apple Creme Brulee",
+    "Marshmallow Mocha",
+    "Pumpkin Chestnut Milky Mochi"
+]
 
 # 页面配置
 st.set_page_config(
@@ -15,29 +32,16 @@ st.set_page_config(
     layout="wide"
 )
 
-# 自定义粉色主题样式
 st.markdown("""
 <style>
-    .stApp {
-        background-color: #f9f5f6;
-    }
-    h1, h2, h3 {
-        color: #d85a84 !important;
-    }
-    .stButton>button {
-        border-radius: 8px;
-    }
+    .stApp { background-color: #f9f5f6; }
+    h1, h2, h3 { color: #d85a84 !important; }
+    .stButton>button { border-radius: 8px; }
 </style>
 """, unsafe_allow_html=True)
 
-DB_NAME = "cupcake_sales.db"
 
-FLAVORS = [
-    "Vanilla", "Chocolate", "Strawberry", "Cookie Cream",
-    "Salty Caremel", "Tiramisu", "Pistachio", "Macha", "Oreo"
-]
-
-
+# ==================== 数据库相关 ====================
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -56,13 +60,13 @@ def init_db():
     conn.close()
 
 
-def calculate_total(qty):
+def calculate_cupcake_total(qty):
+    """Cupcake 阶梯计价：$3.5/个，6个$20，12个$40"""
     bundles_12 = qty // 12
     remainder_12 = qty % 12
     bundles_6 = remainder_12 // 6
     remainder_6 = remainder_12 % 6
-    total = (bundles_12 * 40.0) + (bundles_6 * 20.0) + (remainder_6 * 3.5)
-    return total
+    return (bundles_12 * 40.0) + (bundles_6 * 20.0) + (remainder_6 * 3.5)
 
 
 def load_records():
@@ -76,26 +80,39 @@ def load_records():
     return df
 
 
-def save_order(name, flavor_qtys, request_date, custom_total=None, edit_id=None):
+def save_order(name, cupcake_qtys, boxcake_qtys, request_date, custom_total=None, edit_id=None):
     order_items = []
     total_qty = 0
+    cupcake_qty = 0
+    boxcake_qty = 0
 
-    for flavor, qty in flavor_qtys.items():
+    # Cupcake
+    for flavor, qty in cupcake_qtys.items():
         if qty and qty > 0:
-            order_items.append(f"{flavor}: {qty}")
+            order_items.append(f"Cupcake-{flavor}: {qty}")
+            cupcake_qty += qty
+            total_qty += qty
+
+    # Box Cake
+    for flavor, qty in boxcake_qtys.items():
+        if qty and qty > 0:
+            order_items.append(f"BoxCake-{flavor}: {qty}")
+            boxcake_qty += qty
             total_qty += qty
 
     if total_qty == 0:
-        return False, "请至少选择一个口味并输入数量！"
+        return False, "请至少选择一个产品并输入数量！"
 
     flavors_detail_str = ", ".join(order_items)
-    
+
+    # 计算总价
+    auto_total = calculate_cupcake_total(cupcake_qty) + (boxcake_qty * 15.0)
+
     if custom_total is not None and custom_total > 0:
         total_price = custom_total
     else:
-        total_price = calculate_total(total_qty)
-    
-    # 使用多伦多时间
+        total_price = auto_total
+
     current_time = datetime.now(TORONTO_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
     conn = sqlite3.connect(DB_NAME)
@@ -120,15 +137,26 @@ def save_order(name, flavor_qtys, request_date, custom_total=None, edit_id=None)
     return True, msg
 
 
-def delete_all_records():
+def delete_order(order_id):
+    """删除指定 ID 的订单"""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM sales")
+    cursor.execute("DELETE FROM sales WHERE id=?", (order_id,))
     conn.commit()
     conn.close()
 
 
-# ---------------- 弹窗定义 ----------------
+def delete_all_records():
+    """清空所有记录，并重置 ID 从 1 开始"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM sales")
+    cursor.execute("DELETE FROM sqlite_sequence WHERE name='sales'")
+    conn.commit()
+    conn.close()
+
+
+# ==================== 弹窗 ====================
 @st.dialog("⚠️ 提示")
 def show_warning(message):
     st.write(message)
@@ -146,85 +174,132 @@ def show_success(message):
         st.rerun()
 
 
-@st.dialog("⚠️ 确认清空")
+@st.dialog("⚠️ 确认清空全部")
 def confirm_clear_dialog():
     st.write("确定要清空**所有历史销售记录**吗？")
-    st.write("此操作不可恢复！")
+    st.write("此操作不可恢复！清空后 ID 将从 1 重新开始。")
     col1, col2 = st.columns(2)
     with col1:
         if st.button("确认清空", type="primary", use_container_width=True):
             delete_all_records()
-            st.session_state.confirm_clear = False
-            st.success("已清空所有历史记录！")
+            st.success("已清空所有历史记录！ID 已重置。")
             st.rerun()
     with col2:
         if st.button("取消", use_container_width=True):
-            st.session_state.confirm_clear = False
             st.rerun()
 
 
-# 初始化
-init_db()
+@st.dialog("⚠️ 确认删除订单")
+def confirm_delete_dialog(order_id, customer_name):
+    st.write(f"确定要删除以下订单吗？")
+    st.write(f"**订单 ID：{order_id}**")
+    st.write(f"**客户：{customer_name}**")
+    st.write("此操作不可恢复！")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("确认删除", type="primary", use_container_width=True):
+            delete_order(order_id)
+            st.success(f"订单 ID {order_id} 已删除！")
+            st.rerun()
+    with col2:
+        if st.button("取消", use_container_width=True):
+            st.rerun()
 
-# 使用多伦多时间显示今天日期
+
+# ==================== 登录 ====================
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    st.title("🧁 Cozy Crumb Cake 订单管理系统")
+    st.markdown("### 请先登录")
+    password = st.text_input("请输入密码", type="password", key="login_pwd")
+    if st.button("登录", type="primary"):
+        if password == PASSWORD:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("密码错误，请重试！")
+    st.stop()
+
+
+# ==================== 主界面 ====================
+init_db()
 today_str = datetime.now(TORONTO_TZ).strftime("%Y-%m-%d")
 
 st.title("🧁 Cozy Crumb Cake 订单管理系统")
 st.caption(f"📅 Today: {today_str} （多伦多时间）")
 
-# 初始化 session_state
+# session_state 初始化
 if "edit_id" not in st.session_state:
     st.session_state.edit_id = None
 if "edit_data" not in st.session_state:
     st.session_state.edit_data = {}
-if "confirm_clear" not in st.session_state:
-    st.session_state.confirm_clear = False
 if "form_reset" not in st.session_state:
     st.session_state.form_reset = 0
 
-# ==================== 订单输入区域 ====================
+# ==================== 订单输入 ====================
 st.subheader("📝 新建 / 修改订单")
 
 col1, col2 = st.columns(2)
 with col1:
     default_name = st.session_state.edit_data.get("name", "")
-    name = st.text_input("Customer Name", value=default_name, placeholder="请输入客户姓名", key=f"name_{st.session_state.form_reset}")
-
+    name = st.text_input("Customer Name", value=default_name, placeholder="请输入客户姓名",
+                         key=f"name_{st.session_state.form_reset}")
 with col2:
-    # 默认使用多伦多今天的日期
     default_date = st.session_state.edit_data.get("request_date", today_str)
-    request_date = st.text_input("Request Date", value=default_date, placeholder="例如：2026-09-13", key=f"date_{st.session_state.form_reset}")
+    request_date = st.text_input("Request Date", value=default_date, placeholder="例如：2026-09-14",
+                                 key=f"date_{st.session_state.form_reset}")
 
-st.markdown("**选择各口味数量**（$3.5/个，6个$20，12个$40）")
+# ---------- Cupcake 部分 ----------
+st.markdown("### 🧁 Cupcake 数量")
+st.caption("$3.5/个，6个$20，12个$40")
 
-flavor_qtys = {}
+cupcake_qtys = {}
 cols = st.columns(3)
-for i, flavor in enumerate(FLAVORS):
+for i, flavor in enumerate(CUPCAKE_FLAVORS):
     with cols[i % 3]:
-        default_qty = st.session_state.edit_data.get("flavors", {}).get(flavor, 0)
+        default_qty = st.session_state.edit_data.get("cupcakes", {}).get(flavor, 0)
         qty = st.number_input(
             flavor,
-            min_value=0,
-            step=1,
+            min_value=0, step=1,
             value=int(default_qty) if default_qty else 0,
-            key=f"flavor_{flavor}_{st.session_state.form_reset}"
+            key=f"cupcake_{flavor}_{st.session_state.form_reset}"
         )
-        flavor_qtys[flavor] = qty
+        cupcake_qtys[flavor] = qty
 
-# 实时计算总金额
-current_qty = sum(q for q in flavor_qtys.values() if q)
-auto_total = calculate_total(current_qty)
+# ---------- Box Cake 部分 ----------
+st.markdown("### 📦 Box Cake 数量")
+st.caption("每个 $15")
+
+boxcake_qtys = {}
+cols2 = st.columns(3)
+for i, flavor in enumerate(BOXCAKE_FLAVORS):
+    with cols2[i % 3]:
+        default_qty = st.session_state.edit_data.get("boxcakes", {}).get(flavor, 0)
+        qty = st.number_input(
+            flavor,
+            min_value=0, step=1,
+            value=int(default_qty) if default_qty else 0,
+            key=f"boxcake_{flavor}_{st.session_state.form_reset}"
+        )
+        boxcake_qtys[flavor] = qty
+
+# 计算总金额
+cupcake_total_qty = sum(q for q in cupcake_qtys.values() if q)
+boxcake_total_qty = sum(q for q in boxcake_qtys.values() if q)
+auto_total = calculate_cupcake_total(cupcake_total_qty) + (boxcake_total_qty * 15.0)
 
 st.markdown("---")
 st.markdown(f"### 💵 总金额： **${auto_total:.2f}**")
+st.caption(f"Cupcake: {cupcake_total_qty} 个 + Box Cake: {boxcake_total_qty} 个")
 
 if st.session_state.edit_id:
     st.info(f"当前正在修改订单 ID: {st.session_state.edit_id}，可以在下方手动修改总金额")
     default_total = st.session_state.edit_data.get("total", auto_total)
     custom_total = st.number_input(
         "手动修改总金额 ($)",
-        min_value=0.0,
-        step=0.5,
+        min_value=0.0, step=0.5,
         value=float(default_total),
         key=f"total_{st.session_state.form_reset}"
     )
@@ -240,8 +315,7 @@ if st.button(submit_label, type="primary", use_container_width=True):
         show_warning("请输入 Request Date！")
     else:
         success, msg = save_order(
-            name,
-            flavor_qtys,
+            name, cupcake_qtys, boxcake_qtys,
             request_date.strip(),
             custom_total=custom_total,
             edit_id=st.session_state.edit_id
@@ -256,7 +330,6 @@ st.divider()
 st.subheader("📋 历史订单记录")
 
 df = load_records()
-
 total_revenue = df["total"].sum() if not df.empty else 0.0
 
 st.markdown(
@@ -282,35 +355,60 @@ if not df.empty:
     display_df.columns = ["ID", "Customer Name", "Flavors Detail", "Qty", "Total", "Request Date", "Record Time"]
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-    st.markdown("#### ✏️ 修改订单")
+    st.markdown("#### ✏️ 修改 / 删除订单")
     selected_id = st.selectbox(
-        "选择要修改的订单 ID",
+        "选择要操作的订单 ID",
         options=df["id"].tolist(),
         format_func=lambda x: f"ID {x} - {df[df['id']==x]['name'].values[0]} ({df[df['id']==x]['request_date'].values[0]})"
     )
 
-    if st.button("加载选中订单进行修改", type="secondary"):
-        row = df[df["id"] == selected_id].iloc[0]
-        flavors_dict = {}
-        for part in row["flavors_detail"].split(","):
-            if ":" in part:
-                f_name, f_qty = part.split(":")
-                flavors_dict[f_name.strip()] = int(f_qty.strip())
+    # 获取选中订单的客户名（用于删除确认）
+    selected_row = df[df["id"] == selected_id].iloc[0]
+    selected_name = selected_row["name"]
 
-        st.session_state.edit_id = int(selected_id)
-        st.session_state.edit_data = {
-            "name": row["name"],
-            "request_date": row["request_date"],
-            "flavors": flavors_dict,
-            "total": row["total"]
-        }
-        st.session_state.form_reset += 1
-        st.rerun()
+    col_edit, col_delete = st.columns(2)
 
+    with col_edit:
+        if st.button("📝 加载选中订单进行修改", type="secondary", use_container_width=True):
+            cupcakes_dict = {}
+            boxcakes_dict = {}
+
+            for part in selected_row["flavors_detail"].split(","):
+                part = part.strip()
+                if ":" in part:
+                    f_name, f_qty = part.split(":")
+                    f_name = f_name.strip()
+                    f_qty = int(f_qty.strip())
+                    if f_name.startswith("Cupcake-"):
+                        cupcakes_dict[f_name.replace("Cupcake-", "")] = f_qty
+                    elif f_name.startswith("BoxCake-"):
+                        boxcakes_dict[f_name.replace("BoxCake-", "")] = f_qty
+                    else:
+                        # 兼容旧数据
+                        cupcakes_dict[f_name] = f_qty
+
+            st.session_state.edit_id = int(selected_id)
+            st.session_state.edit_data = {
+                "name": selected_row["name"],
+                "request_date": selected_row["request_date"],
+                "cupcakes": cupcakes_dict,
+                "boxcakes": boxcakes_dict,
+                "total": selected_row["total"]
+            }
+            st.session_state.form_reset += 1
+            st.rerun()
+
+    with col_delete:
+        if st.button("🗑️ 删除选中订单", type="secondary", use_container_width=True):
+            confirm_delete_dialog(selected_id, selected_name)
+
+    # 导出 & 清空全部
+    st.markdown("---")
     exp_col1, exp_col2 = st.columns(2)
     with exp_col1:
         excel_df = df.copy()
-        excel_df.columns = ["ID", "Customer Name", "Flavors Detail", "Total Quantity", "Total Price ($)", "Request Date", "Record Time"]
+        excel_df.columns = ["ID", "Customer Name", "Flavors Detail", "Total Quantity",
+                            "Total Price ($)", "Request Date", "Record Time"]
         buffer = BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             excel_df.to_excel(writer, index=False, sheet_name="Sales")
