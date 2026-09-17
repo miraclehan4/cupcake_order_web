@@ -3,7 +3,7 @@ name: Streamlit Keep Alive
 on:
   schedule:
     # 改为每隔 2 小时在整点运行一次
-    - cron: '0 */10 * * *'
+    - cron: '0 */8 * * *'
   workflow_dispatch: # 允许手动运行
 
 jobs:
