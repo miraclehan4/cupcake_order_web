@@ -13,6 +13,6 @@ jobs:
     steps:
       - name: Ping Streamlit app
         run: |
-          curl -L --max-time 60 --retry 3 --retry-delay 5 \
+          curl -I --max-time 60 --retry 3 --retry-delay 5 \
             -o /dev/null -s -w "%{http_code}\n" \
             https://cozycrumbcakeorder.streamlit.app/
