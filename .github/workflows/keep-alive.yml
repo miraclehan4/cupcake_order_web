@@ -1,15 +1,18 @@
-name: Streamlit Keep Alive
+name: Keep Streamlit App Alive
 
 on:
   schedule:
-    # 改为每隔 2 小时在整点运行一次
-    - cron: '0 */1 * * *'
-  workflow_dispatch: # 允许手动运行
+    # Every 6 hours
+    - cron: "0 */4 * * *"
+  workflow_dispatch:
 
 jobs:
-  ping:
+  keep-alive:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Send HTTP request to Streamlit app
+      - name: Ping Streamlit app
         run: |
-          curl -I https://cozycrumbcakeorder.streamlit.app/
+          curl -L --max-time 60 --retry 3 --retry-delay 5 \
+            -o /dev/null -s -w "%{http_code}\n" \
+            https://cozycrumbcakeorder.streamlit.app/
