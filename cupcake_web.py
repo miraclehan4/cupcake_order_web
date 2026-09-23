@@ -1,19 +1,37 @@
-import streamlit as st
-import sqlite3
-import pandas as pd
 from datetime import datetime
-from zoneinfo import ZoneInfo
 from io import BytesIO
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+import streamlit as st
+from supabase import Client, create_client
 
 # ==================== 配置区 ====================
 TORONTO_TZ = ZoneInfo("America/Toronto")
-DB_NAME = "cupcake_sales.db"
-PASSWORD = "0417"          # ← 这里改登录密码
+PASSWORD = "0417"  # ← 这里改登录密码
+
+
+# 初始化 Supabase 客户端（从 Streamlit secrets 读取云端凭证）
+@st.cache_resource
+def init_supabase() -> Client:
+    url = st.secrets["supabase"]["url"]
+    key = st.secrets["supabase"]["key"]
+    return create_client(url, key)
+
+
+supabase = init_supabase()
 
 # Cupcake 口味
 CUPCAKE_FLAVORS = [
-    "Vanilla", "Chocolate", "Strawberry", "Cookie Cream",
-    "Salty Caremel", "Tiramisu", "Pistachio", "Macha", "Oreo"
+    "Vanilla",
+    "Chocolate",
+    "Strawberry",
+    "Cookie Cream",
+    "Salty Caremel",
+    "Tiramisu",
+    "Pistachio",
+    "Macha",
+    "Oreo",
 ]
 
 # Box Cake 口味（每个 $15）
@@ -22,44 +40,27 @@ BOXCAKE_FLAVORS = [
     "Super Strawberry",
     "Hojicha Caramel Apple Creme Brulee",
     "Marshmallow Mocha",
-    "Pumpkin Chestnut Milky Mochi"
+    "Pumpkin Chestnut Milky Mochi",
 ]
 
 # 页面配置
 st.set_page_config(
-    page_title="Cozy Crumb Cake 订单管理系统",
-    page_icon="🧁",
-    layout="wide"
+    page_title="Cozy Crumb Cake 订单管理系统", page_icon="🧁", layout="wide"
 )
 
-st.markdown("""
+st.markdown(
+    """
 <style>
     .stApp { background-color: #f9f5f6; }
     h1, h2, h3 { color: #d85a84 !important; }
     .stButton>button { border-radius: 8px; }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 
-# ==================== 数据库相关 ====================
-def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS sales (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            flavors_detail TEXT NOT NULL,
-            quantity INTEGER NOT NULL,
-            total REAL NOT NULL,
-            request_date TEXT NOT NULL,
-            record_time TEXT NOT NULL
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-
+# ==================== Supabase 数据库相关函数 ====================
 def calculate_cupcake_total(qty):
     """Cupcake 阶梯计价：$3.5/个，6个$20，12个$40"""
     bundles_12 = qty // 12
@@ -70,17 +71,44 @@ def calculate_cupcake_total(qty):
 
 
 def load_records():
-    conn = sqlite3.connect(DB_NAME)
-    df = pd.read_sql_query(
-        "SELECT id, name, flavors_detail, quantity, total, request_date, record_time "
-        "FROM sales ORDER BY id DESC",
-        conn
-    )
-    conn.close()
-    return df
+    """从 Supabase 的 orders 表加载所有订单数据"""
+    try:
+        response = (
+            supabase.table("orders").select("*").order("id", desc=True).execute()
+        )
+        data = response.data
+        if data:
+            return pd.DataFrame(data)
+        else:
+            return pd.DataFrame(
+                columns=[
+                    "id",
+                    "name",
+                    "flavors_detail",
+                    "quantity",
+                    "total",
+                    "request_date",
+                    "record_time",
+                ]
+            )
+    except Exception as e:
+        st.error(f"连接云端数据库失败: {e}")
+        return pd.DataFrame(
+            columns=[
+                "id",
+                "name",
+                "flavors_detail",
+                "quantity",
+                "total",
+                "request_date",
+                "record_time",
+            ]
+        )
 
 
-def save_order(name, cupcake_qtys, boxcake_qtys, request_date, custom_total=None, edit_id=None):
+def save_order(
+    name, cupcake_qtys, boxcake_qtys, request_date, custom_total=None, edit_id=None
+):
     order_items = []
     total_qty = 0
     cupcake_qty = 0
@@ -115,45 +143,52 @@ def save_order(name, cupcake_qtys, boxcake_qtys, request_date, custom_total=None
 
     current_time = datetime.now(TORONTO_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
+    try:
+        if edit_id is None:
+            # 插入新订单到 Supabase
+            new_record = {
+                "name": name.strip(),
+                "flavors_detail": flavors_detail_str,
+                "quantity": int(total_qty),
+                "total": float(total_price),
+                "request_date": str(request_date),
+                "record_time": str(current_time),
+            }
+            supabase.table("orders").insert(new_record).execute()
+            msg = f"订单记录成功！\n\n客户：{name}\n总数量：{total_qty} 个\n总计：${total_price:.2f}"
+        else:
+            # 修改 Supabase 中的订单
+            updated_record = {
+                "name": name.strip(),
+                "flavors_detail": flavors_detail_str,
+                "quantity": int(total_qty),
+                "total": float(total_price),
+                "request_date": str(request_date),
+            }
+            supabase.table("orders").update(updated_record).eq(
+                "id", int(edit_id)
+            ).execute()
+            msg = f"订单修改成功！\n\n订单 ID：{edit_id}\n客户：{name}\n总数量：{total_qty} 个\n总计：${total_price:.2f}"
 
-    if edit_id is None:
-        cursor.execute(
-            "INSERT INTO sales (name, flavors_detail, quantity, total, request_date, record_time) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (name.strip(), flavors_detail_str, total_qty, total_price, request_date, current_time)
-        )
-        msg = f"订单记录成功！\n\n客户：{name}\n总数量：{total_qty} 个\n总计：${total_price:.2f}"
-    else:
-        cursor.execute(
-            "UPDATE sales SET name=?, flavors_detail=?, quantity=?, total=?, request_date=? WHERE id=?",
-            (name.strip(), flavors_detail_str, total_qty, total_price, request_date, edit_id)
-        )
-        msg = f"订单修改成功！\n\n订单 ID：{edit_id}\n客户：{name}\n总数量：{total_qty} 个\n总计：${total_price:.2f}"
-
-    conn.commit()
-    conn.close()
-    return True, msg
+        return True, msg
+    except Exception as e:
+        return False, f"保存到云端数据库失败: {e}"
 
 
 def delete_order(order_id):
-    """删除指定 ID 的订单"""
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM sales WHERE id=?", (order_id,))
-    conn.commit()
-    conn.close()
+    """删除 Supabase 中指定 ID 的订单"""
+    try:
+        supabase.table("orders").delete().eq("id", int(order_id)).execute()
+    except Exception as e:
+        st.error(f"删除失败: {e}")
 
 
 def delete_all_records():
-    """清空所有记录，并重置 ID 从 1 开始"""
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM sales")
-    cursor.execute("DELETE FROM sqlite_sequence WHERE name='sales'")
-    conn.commit()
-    conn.close()
+    """清空 Supabase 中的所有历史记录"""
+    try:
+        supabase.table("orders").delete().gt("id", 0).execute()
+    except Exception as e:
+        st.error(f"清空记录失败: {e}")
 
 
 # ==================== 弹窗 ====================
@@ -177,12 +212,12 @@ def show_success(message):
 @st.dialog("⚠️ 确认清空全部")
 def confirm_clear_dialog():
     st.write("确定要清空**所有历史销售记录**吗？")
-    st.write("此操作不可恢复！清空后 ID 将从 1 重新开始。")
+    st.write("此操作不可恢复！")
     col1, col2 = st.columns(2)
     with col1:
         if st.button("确认清空", type="primary", use_container_width=True):
             delete_all_records()
-            st.success("已清空所有历史记录！ID 已重置。")
+            st.success("已清空所有历史记录！")
             st.rerun()
     with col2:
         if st.button("取消", use_container_width=True):
@@ -224,11 +259,10 @@ if not st.session_state.authenticated:
 
 
 # ==================== 主界面 ====================
-init_db()
 today_str = datetime.now(TORONTO_TZ).strftime("%Y-%m-%d")
 
 st.title("🧁 Cozy Crumb Cake 订单管理系统")
-st.caption(f"📅 Today: {today_str} （多伦多时间）")
+st.caption(f"📅 Today: {today_str} （多伦多时间 · 云端同步版）")
 
 # session_state 初始化
 if "edit_id" not in st.session_state:
@@ -244,12 +278,20 @@ st.subheader("📝 新建 / 修改订单")
 col1, col2 = st.columns(2)
 with col1:
     default_name = st.session_state.edit_data.get("name", "")
-    name = st.text_input("Customer Name", value=default_name, placeholder="请输入客户姓名",
-                         key=f"name_{st.session_state.form_reset}")
+    name = st.text_input(
+        "Customer Name",
+        value=default_name,
+        placeholder="请输入客户姓名",
+        key=f"name_{st.session_state.form_reset}",
+    )
 with col2:
     default_date = st.session_state.edit_data.get("request_date", today_str)
-    request_date = st.text_input("Request Date", value=default_date, placeholder="例如：2026-09-14",
-                                 key=f"date_{st.session_state.form_reset}")
+    request_date = st.text_input(
+        "Request Date",
+        value=default_date,
+        placeholder="例如：2026-09-14",
+        key=f"date_{st.session_state.form_reset}",
+    )
 
 # ---------- Cupcake 部分 ----------
 st.markdown("### 🧁 Cupcake 数量")
@@ -259,12 +301,15 @@ cupcake_qtys = {}
 cols = st.columns(3)
 for i, flavor in enumerate(CUPCAKE_FLAVORS):
     with cols[i % 3]:
-        default_qty = st.session_state.edit_data.get("cupcakes", {}).get(flavor, 0)
+        default_qty = (
+            st.session_state.edit_data.get("cupcakes", {}).get(flavor, 0)
+        )
         qty = st.number_input(
             flavor,
-            min_value=0, step=1,
+            min_value=0,
+            step=1,
             value=int(default_qty) if default_qty else 0,
-            key=f"cupcake_{flavor}_{st.session_state.form_reset}"
+            key=f"cupcake_{flavor}_{st.session_state.form_reset}",
         )
         cupcake_qtys[flavor] = qty
 
@@ -276,38 +321,50 @@ boxcake_qtys = {}
 cols2 = st.columns(3)
 for i, flavor in enumerate(BOXCAKE_FLAVORS):
     with cols2[i % 3]:
-        default_qty = st.session_state.edit_data.get("boxcakes", {}).get(flavor, 0)
+        default_qty = (
+            st.session_state.edit_data.get("boxcakes", {}).get(flavor, 0)
+        )
         qty = st.number_input(
             flavor,
-            min_value=0, step=1,
+            min_value=0,
+            step=1,
             value=int(default_qty) if default_qty else 0,
-            key=f"boxcake_{flavor}_{st.session_state.form_reset}"
+            key=f"boxcake_{flavor}_{st.session_state.form_reset}",
         )
         boxcake_qtys[flavor] = qty
 
 # 计算总金额
 cupcake_total_qty = sum(q for q in cupcake_qtys.values() if q)
 boxcake_total_qty = sum(q for q in boxcake_qtys.values() if q)
-auto_total = calculate_cupcake_total(cupcake_total_qty) + (boxcake_total_qty * 15.0)
+auto_total = calculate_cupcake_total(cupcake_total_qty) + (
+    boxcake_total_qty * 15.0
+)
 
 st.markdown("---")
 st.markdown(f"### 💵 总金额： **${auto_total:.2f}**")
 st.caption(f"Cupcake: {cupcake_total_qty} 个 + Box Cake: {boxcake_total_qty} 个")
 
 if st.session_state.edit_id:
-    st.info(f"当前正在修改订单 ID: {st.session_state.edit_id}，可以在下方手动修改总金额")
+    st.info(
+        f"当前正在修改订单 ID: {st.session_state.edit_id}，可以在下方手动修改总金额"
+    )
     default_total = st.session_state.edit_data.get("total", auto_total)
     custom_total = st.number_input(
         "手动修改总金额 ($)",
-        min_value=0.0, step=0.5,
+        min_value=0.0,
+        step=0.5,
         value=float(default_total),
-        key=f"total_{st.session_state.form_reset}"
+        key=f"total_{st.session_state.form_reset}",
     )
 else:
     custom_total = auto_total
 
 # 提交按钮
-submit_label = f"✅ 确认修改订单 #{st.session_state.edit_id}" if st.session_state.edit_id else "✅ 提交并保存订单"
+submit_label = (
+    f"✅ 确认修改订单 #{st.session_state.edit_id}"
+    if st.session_state.edit_id
+    else "✅ 提交并保存订单"
+)
 if st.button(submit_label, type="primary", use_container_width=True):
     if not name.strip():
         show_warning("请输入客户姓名！")
@@ -315,10 +372,12 @@ if st.button(submit_label, type="primary", use_container_width=True):
         show_warning("请输入 Request Date！")
     else:
         success, msg = save_order(
-            name, cupcake_qtys, boxcake_qtys,
+            name,
+            cupcake_qtys,
+            boxcake_qtys,
             request_date.strip(),
             custom_total=custom_total,
-            edit_id=st.session_state.edit_id
+            edit_id=st.session_state.edit_id,
         )
         if success:
             show_success(msg)
@@ -330,7 +389,9 @@ st.divider()
 st.subheader("📋 历史订单记录")
 
 df = load_records()
-total_revenue = df["total"].sum() if not df.empty else 0.0
+total_revenue = (
+    df["total"].sum() if not df.empty and "total" in df.columns else 0.0
+)
 
 st.markdown(
     f"""
@@ -346,20 +407,40 @@ st.markdown(
         <h1 style="color: #d85a84; margin: 0; font-size: 2.2rem;">${total_revenue:,.2f}</h1>
     </div>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
-if not df.empty:
+if not df.empty and "id" in df.columns:
     display_df = df.copy()
     display_df["total"] = display_df["total"].apply(lambda x: f"${x:.2f}")
-    display_df.columns = ["ID", "Customer Name", "Flavors Detail", "Qty", "Total", "Request Date", "Record Time"]
+    # 确保字段按正确顺序展示
+    display_df = display_df[
+        [
+            "id",
+            "name",
+            "flavors_detail",
+            "quantity",
+            "total",
+            "request_date",
+            "record_time",
+        ]
+    ]
+    display_df.columns = [
+        "ID",
+        "Customer Name",
+        "Flavors Detail",
+        "Qty",
+        "Total",
+        "Request Date",
+        "Record Time",
+    ]
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
     st.markdown("#### ✏️ 修改 / 删除订单")
     selected_id = st.selectbox(
         "选择要操作的订单 ID",
         options=df["id"].tolist(),
-        format_func=lambda x: f"ID {x} - {df[df['id']==x]['name'].values[0]} ({df[df['id']==x]['request_date'].values[0]})"
+        format_func=lambda x: f"ID {x} - {df[df['id']==x]['name'].values[0]} ({df[df['id']==x]['request_date'].values[0]})",
     )
 
     # 获取选中订单的客户名（用于删除确认）
@@ -369,7 +450,9 @@ if not df.empty:
     col_edit, col_delete = st.columns(2)
 
     with col_edit:
-        if st.button("📝 加载选中订单进行修改", type="secondary", use_container_width=True):
+        if st.button(
+            "📝 加载选中订单进行修改", type="secondary", use_container_width=True
+        ):
             cupcakes_dict = {}
             boxcakes_dict = {}
 
@@ -380,11 +463,14 @@ if not df.empty:
                     f_name = f_name.strip()
                     f_qty = int(f_qty.strip())
                     if f_name.startswith("Cupcake-"):
-                        cupcakes_dict[f_name.replace("Cupcake-", "")] = f_qty
+                        cupcakes_dict[
+                            f_name.replace("Cupcake-", "")
+                        ] = f_qty
                     elif f_name.startswith("BoxCake-"):
-                        boxcakes_dict[f_name.replace("BoxCake-", "")] = f_qty
+                        boxcakes_dict[
+                            f_name.replace("BoxCake-", "")
+                        ] = f_qty
                     else:
-                        # 兼容旧数据
                         cupcakes_dict[f_name] = f_qty
 
             st.session_state.edit_id = int(selected_id)
@@ -393,7 +479,7 @@ if not df.empty:
                 "request_date": selected_row["request_date"],
                 "cupcakes": cupcakes_dict,
                 "boxcakes": boxcakes_dict,
-                "total": selected_row["total"]
+                "total": selected_row["total"],
             }
             st.session_state.form_reset += 1
             st.rerun()
@@ -406,9 +492,7 @@ if not df.empty:
     st.markdown("---")
     exp_col1, exp_col2 = st.columns(2)
     with exp_col1:
-        excel_df = df.copy()
-        excel_df.columns = ["ID", "Customer Name", "Flavors Detail", "Total Quantity",
-                            "Total Price ($)", "Request Date", "Record Time"]
+        excel_df = display_df.copy()
         buffer = BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             excel_df.to_excel(writer, index=False, sheet_name="Sales")
@@ -417,7 +501,7 @@ if not df.empty:
             data=buffer.getvalue(),
             file_name=f"Cupcake_Sales_Report_{datetime.now(TORONTO_TZ).strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
+            use_container_width=True,
         )
 
     with exp_col2:
@@ -425,7 +509,7 @@ if not df.empty:
             confirm_clear_dialog()
 
 else:
-    st.info("暂无销售记录，请先添加订单。")
+    st.info("暂无销售记录，请先在上方添加订单。")
 
 st.markdown("---")
-st.caption("Cozy Crumb Cake 订单管理系统 · Web Version（多伦多时区）")
+st.caption("Cozy Crumb Cake 订单管理系统 · 云端同步版（Supabase + 多伦多时区）")
