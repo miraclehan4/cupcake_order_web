@@ -8,7 +8,7 @@ from supabase import Client, create_client
 
 # ==================== 配置区 ====================
 TORONTO_TZ = ZoneInfo("America/Toronto")
-PASSWORD = "0417"  # ← 这里改登录密码
+PASSWORD = "0417"  # ← 这里改登录密码1
 
 
 # 初始化 Supabase 客户端（从 Streamlit secrets 读取云端凭证）
